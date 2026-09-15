@@ -1,0 +1,33 @@
+name: esp32_adas_controller
+description: "ESP32 ADAS Dashboard Controller"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_bluetooth_serial: ^0.4.0
+  flutter_mjpeg: ^2.0.1
+  video_player: ^2.8.2
+  audioplayers: ^6.0.0
+  http: ^0.13.6
+  permission_handler: ^11.0.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.2
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets//
+    - assets/intro_video.mp4
+    - assets/wheel_body.png
+    - assets/pedal_brake.png
+    - assets/pedal_gas.png
+    - assets/updated sound effects/
+    - assets/Music/  # <-- Pointing to your actual Music folder path
