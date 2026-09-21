@@ -157,13 +157,13 @@ class SimVehicle {
 }
 
 // ============================================================================
-// 3. SONG INFO MODEL WITH PRE-DECODED AMPLITUDE ENVELOPE MAPPING
+// 3. SONG INFO MODEL WITH EXACT FILENAMES MATCHING GITHUB ASSETS
 // ============================================================================
 class SongInfo {
   final String title;
   final String artist;
   final String assetPath;
-  final List<double> energyEnvelope; // Real amplitude envelope decoded from audio track (30ms windows)
+  final List<double> energyEnvelope;
   final Color accentTint;
 
   SongInfo({
@@ -176,7 +176,7 @@ class SongInfo {
 }
 
 // ============================================================================
-// 4. PERSISTENT SINGLETON MUSIC SERVICE (TRUE AUDIO AMPLITUDE LOOKUP)
+// 4. PERSISTENT SINGLETON MUSIC SERVICE (WITH SHARED AUDIO CONTEXT & ALL 7 SONGS)
 // ============================================================================
 class AdasMusicService extends ChangeNotifier {
   static final AdasMusicService _instance = AdasMusicService._internal();
@@ -190,7 +190,7 @@ class AdasMusicService extends ChangeNotifier {
   int _currentIndex = 0;
   double _beatIntensity = 0.0;
 
-  // Pre-analyzed realistic audio amplitude profiles for each track (30ms windows)
+  // Complete playlist containing all bundled songs with exact names
   final List<SongInfo> playlist = [
     SongInfo(
       title: 'Midnight Drive',
@@ -220,6 +220,27 @@ class AdasMusicService extends ChangeNotifier {
       energyEnvelope: List.generate(6000, (i) => 0.3 + 0.5 * math.sin(i * 0.1).abs() + 0.35 * (i % 28 == 0 ? 1.0 : 0.0)),
       accentTint: const Color(0xFF00E676),
     ),
+    SongInfo(
+      title: 'Humdum',
+      artist: 'Aditya Rikhari',
+      assetPath: 'Music/Aditya Rikhari - Humdum (Official Music Video).mp3',
+      energyEnvelope: List.generate(6000, (i) => 0.3 + 0.4 * math.sin(i * 0.14).abs() + 0.3 * (i % 30 == 0 ? 1.0 : 0.0)),
+      accentTint: const Color(0xFFFF4081),
+    ),
+    SongInfo(
+      title: 'Dubplate',
+      artist: 'General Levy',
+      assetPath: 'Music/General Levy - Dubplate - Little Lion Sound - Hip-Hop Freestyle....mp3',
+      energyEnvelope: List.generate(6000, (i) => 0.4 + 0.5 * math.cos(i * 0.25).abs() + 0.5 * (i % 14 == 0 ? 1.0 : 0.0)),
+      accentTint: const Color(0xFFFFAB40),
+    ),
+    SongInfo(
+      title: 'Naal Nachna',
+      artist: 'Dhurandhar',
+      assetPath: 'Music/Naal Nachna - Audio _ Dhurandhar _ Ranveer Singh, Sara Arjun, ....mp3',
+      energyEnvelope: List.generate(6000, (i) => 0.35 + 0.4 * math.sin(i * 0.18).abs() + 0.4 * (i % 24 == 0 ? 1.0 : 0.0)),
+      accentTint: const Color(0xFF69F0AE),
+    ),
   ];
 
   AudioPlayer get player => _audioPlayer;
@@ -236,6 +257,25 @@ class AdasMusicService extends ChangeNotifier {
   }
 
   Future<void> _init() async {
+    // Shared AudioContext to prevent OS-level audio focus interruption across concurrent players
+    final AudioContext sharedAudioContext = AudioContext(
+      android: AudioContextAndroid(
+        isSpeakerphoneOn: false,
+        stayAwake: false,
+        contentType: AndroidContentType.music,
+        usageType: AndroidUsageType.media,
+        audioFocus: AndroidAudioFocus.gainTransientMayDuck,
+      ),
+      iOS: AudioContextIOS(
+        category: AVAudioSessionCategory.playback,
+        options: {
+          AVAudioSessionOptions.mixWithOthers,
+          AVAudioSessionOptions.duckOthers,
+        },
+      ),
+    );
+
+    await _audioPlayer.setAudioContext(sharedAudioContext);
     await _audioPlayer.setReleaseMode(ReleaseMode.loop);
 
     _audioPlayer.onPlayerStateChanged.listen((state) {
@@ -251,29 +291,28 @@ class AdasMusicService extends ChangeNotifier {
       notifyListeners();
     });
 
-    // True real audio energy envelope lookup synced to exact playback position
     _audioPlayer.onPositionChanged.listen((p) {
       _position = p;
-      final envelope = currentSong.energyEnvelope;
-      if (_playerState == PlayerState.playing && envelope.isNotEmpty) {
-        int index = (p.inMilliseconds / 30).floor().clamp(0, envelope.length - 1);
-        double rawEnergy = envelope[index];
+      if (_playerState == PlayerState.playing) {
+        final envelope = currentSong.energyEnvelope;
+        if (envelope.isNotEmpty) {
+          int index = (p.inMilliseconds / 30).floor().clamp(0, envelope.length - 1);
+          double rawEnergy = envelope[index];
 
-        // Compute rolling average for transient onset detection
-        int start = math.max(0, index - 7);
-        int end = math.min(envelope.length - 1, index + 7);
-        double sum = 0;
-        for (int i = start; i <= end; i++) {
-          sum += envelope[i];
+          int start = math.max(0, index - 7);
+          int end = math.min(envelope.length - 1, index + 7);
+          double sum = 0;
+          for (int i = start; i <= end; i++) {
+            sum += envelope[i];
+          }
+          double rollingAvg = sum / (end - start + 1);
+
+          double isTransient = (rawEnergy > rollingAvg * 1.2) ? 1.0 : 0.0;
+          double target = (rawEnergy * 0.45) + (isTransient * rawEnergy * 0.55);
+
+          _beatIntensity += (target - _beatIntensity) * 0.35;
+          _beatIntensity = _beatIntensity.clamp(0.08, 1.0);
         }
-        double rollingAvg = sum / (end - start + 1);
-
-        double isTransient = (rawEnergy > rollingAvg * 1.2) ? 1.0 : 0.0;
-        double target = (rawEnergy * 0.45) + (isTransient * rawEnergy * 0.55);
-
-        // Exponential moving average smoothing for cinematic attack and decay
-        _beatIntensity += (target - _beatIntensity) * 0.35;
-        _beatIntensity = _beatIntensity.clamp(0.08, 1.0);
       } else {
         _beatIntensity = 0.0;
       }
@@ -400,14 +439,18 @@ class EliteCockpitNeonCard extends StatelessWidget {
               width: 1.2,
             ),
           ),
-          child: Container(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(borderRadius - 1),
-              border: Border(
-                top: BorderSide(color: activeGlow.withOpacity(0.35), width: 1.0),
+          child: Column(
+            children: [
+              Container(
+                height: 1,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [Colors.transparent, activeGlow.withOpacity(0.5), Colors.transparent],
+                  ),
+                ),
               ),
-            ),
-            child: child,
+              Expanded(child: child),
+            ],
           ),
         ),
       ),
@@ -416,7 +459,7 @@ class EliteCockpitNeonCard extends StatelessWidget {
 }
 
 // ============================================================================
-// 6. PREMIUM MUSIC PLAYER HUD WIDGET (TWO-ROW REDESIGN WITH VOLUME & SEARCH)
+// 6. PREMIUM MUSIC PLAYER HUD WIDGET
 // ============================================================================
 class EliteMusicPlayerHUDWidget extends StatelessWidget {
   final AdasMusicService musicService;
@@ -455,7 +498,6 @@ class EliteMusicPlayerHUDWidget extends StatelessWidget {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // Row 1: Album art, Title/Artist, Primary Controls, Search Icon
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
@@ -517,9 +559,9 @@ class EliteMusicPlayerHUDWidget extends StatelessWidget {
                           icon: const Icon(Icons.skip_previous, color: Colors.white70, size: 16),
                           onPressed: () => musicService.prevTrack(),
                         ),
-                        const SizedBox(width: 8),
+                        const SizedBox(width: 10),
                         CircleAvatar(
-                          radius: 15, // Increased to 15 per brief
+                          radius: 15,
                           backgroundColor: Colors.white,
                           child: IconButton(
                             padding: EdgeInsets.zero,
@@ -532,7 +574,7 @@ class EliteMusicPlayerHUDWidget extends StatelessWidget {
                             onPressed: () => musicService.togglePlay(),
                           ),
                         ),
-                        const SizedBox(width: 8),
+                        const SizedBox(width: 10),
                         IconButton(
                           padding: EdgeInsets.zero,
                           constraints: const BoxConstraints(),
@@ -542,7 +584,6 @@ class EliteMusicPlayerHUDWidget extends StatelessWidget {
                       ],
                     ),
                     const Spacer(),
-                    // Search Action Button
                     InkWell(
                       onTap: onSearchTap ?? () {},
                       borderRadius: BorderRadius.circular(8),
@@ -554,7 +595,6 @@ class EliteMusicPlayerHUDWidget extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 2),
-                // Row 2: Progress scrubber + Volume Control
                 Row(
                   children: [
                     Text(
@@ -565,7 +605,7 @@ class EliteMusicPlayerHUDWidget extends StatelessWidget {
                     Expanded(
                       child: SliderTheme(
                         data: SliderThemeData(
-                          trackHeight: 1.0, // Refined to 1.0 per brief
+                          trackHeight: 1.0,
                           thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 2.0),
                           activeTrackColor: currentSong.accentTint,
                           inactiveTrackColor: Colors.white24,
@@ -593,7 +633,6 @@ class EliteMusicPlayerHUDWidget extends StatelessWidget {
                       style: const TextStyle(color: Colors.white54, fontSize: 6.0),
                     ),
                     const SizedBox(width: 8),
-                    // Volume Control
                     Icon(
                       musicService.volume == 0 ? Icons.volume_off : Icons.volume_up,
                       color: Colors.white70,
@@ -645,7 +684,7 @@ class ExactScreenshotDashboard extends StatefulWidget {
 class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
     with TickerProviderStateMixin {
   BluetoothConnection? _connection;
-  bool _isConnected = false; // Fixed: initialized to false per brief
+  bool _isConnected = false; // Verified default state is false per brief
   bool _isConnecting = false;
   List<BluetoothDevice> _devicesList = [];
 
@@ -786,11 +825,38 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
   }
 
   Future<void> _initExclusiveAudio() async {
+    // Shared AudioContext to prevent OS-level audio focus interruption across concurrent players
+    final AudioContext sharedAudioContext = AudioContext(
+      android: AudioContextAndroid(
+        isSpeakerphoneOn: false,
+        stayAwake: false,
+        contentType: AndroidContentType.music,
+        usageType: AndroidUsageType.media,
+        audioFocus: AndroidAudioFocus.gainTransientMayDuck,
+      ),
+      iOS: AudioContextIOS(
+        category: AVAudioSessionCategory.playback,
+        options: {
+          AVAudioSessionOptions.mixWithOthers,
+          AVAudioSessionOptions.duckOthers,
+        },
+      ),
+    );
+
     _modeSoundPlayer = AudioPlayer()..setReleaseMode(ReleaseMode.stop);
+    await _modeSoundPlayer.setAudioContext(sharedAudioContext);
+
     _uiSoundPlayer = AudioPlayer()..setReleaseMode(ReleaseMode.stop);
+    await _uiSoundPlayer.setAudioContext(sharedAudioContext);
+
     _hornSoundPlayer = AudioPlayer()..setReleaseMode(ReleaseMode.stop);
+    await _hornSoundPlayer.setAudioContext(sharedAudioContext);
+
     _powertrainPlayer = AudioPlayer()..setReleaseMode(ReleaseMode.loop);
+    await _powertrainPlayer.setAudioContext(sharedAudioContext);
+
     _decelerationPlayer = AudioPlayer()..setReleaseMode(ReleaseMode.loop);
+    await _decelerationPlayer.setAudioContext(sharedAudioContext);
 
     try {
       await _powertrainPlayer.setVolume(0.10);
@@ -1355,14 +1421,16 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
   void _connectToDevice(BluetoothDevice device) async {
     setState(() {
       _isConnecting = true;
+      debugPrint('BLUETOOTH STATE -> Connecting to ${device.address}');
     });
     try {
       BluetoothConnection connection = await BluetoothConnection.toAddress(device.address);
       if (mounted) {
         setState(() {
           _connection = connection;
-          _isConnected = true; // Confirmed success connection path
+          _isConnected = true; // Confirmed connection success
           _isConnecting = false;
+          debugPrint('BLUETOOTH STATE -> Connected successfully (_isConnected: $_isConnected)');
         });
       }
 
@@ -1371,6 +1439,7 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
           setState(() {
             _isConnected = false;
             _isConnecting = false;
+            debugPrint('BLUETOOTH STATE -> Disconnected via onDone (_isConnected: $_isConnected)');
           });
         }
       });
@@ -1379,6 +1448,7 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
         setState(() {
           _isConnected = false;
           _isConnecting = false;
+          debugPrint('BLUETOOTH STATE -> Connection failed: $e (_isConnected: $_isConnected)');
         });
       }
     }
@@ -1564,9 +1634,7 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
                                 key: const ValueKey('spotify_popup'),
                                 musicService: _musicService,
                                 activeColor: activeAccentColor,
-                                onSearchTap: () {
-                                  // Track search trigger stub
-                                },
+                                onSearchTap: () {},
                               )
                             : Column(
                                 key: const ValueKey('lower_gauges'),
@@ -1768,9 +1836,9 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
                 color: _adasEnabled ? const Color(0xFF052A26) : const Color(0xFF0A1220),
                 borderRadius: BorderRadius.circular(10),
                 border: Border.all(color: _adasEnabled ? const Color(0xFF00E676) : Colors.white.withOpacity(0.08), width: 1.5),
-                boxShadow: _adasEnabled ? [
-                  const BoxShadow(color: Color(0xFF00E676), blurRadius: 8, spreadRadius: 0.5)
-                ] : [],
+                boxShadow: _adasEnabled
+                    ? [BoxShadow(color: const Color(0xFF00E676).withOpacity(0.45), blurRadius: 10, spreadRadius: 0.5)]
+                    : [],
               ),
               child: Row(
                 children: [
@@ -1841,7 +1909,6 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // Bluetooth 3-way State Icon (Disconnected, Connecting with amber pulse, Connected)
               AnimatedContainer(
                 duration: const Duration(milliseconds: 300),
                 padding: const EdgeInsets.all(7),
@@ -1868,7 +1935,6 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
                 ),
               ),
               const SizedBox(width: 8),
-              // Music Icon with background playback indicator ring
               GestureDetector(
                 onTap: _toggleMusicMode,
                 child: Stack(
@@ -2851,73 +2917,52 @@ class ArcadeMotionHighwayPainter extends CustomPainter {
       ..moveTo(hRight.dx, hRight.dy)
       ..quadraticBezierTo(cRight.dx, cRight.dy, bRight.dx, bRight.dy);
 
-    double scanPhase = (displacement * 2.5) % 1.0;
-
-    final List<ui.PathMetric> leftMetrics = leftLane.computeMetrics().toList();
-    if (leftMetrics.isNotEmpty) {
-      final ui.PathMetric metric = leftMetrics.first;
-      final double totalLen = metric.length;
-      const int segments = 16;
-      for (int i = 0; i < segments; i++) {
-        double startFraction = i / segments;
-        double endFraction = (i + 1) / segments;
-        Path segment = metric.extractPath(startFraction * totalLen, endFraction * totalLen);
-
-        double distanceToScan = (startFraction - scanPhase).abs();
-        if (distanceToScan > 0.5) distanceToScan = 1.0 - distanceToScan;
-        double pulseFactor = 1.0 - (distanceToScan * 2.0);
-        if (pulseFactor < 0.0) pulseFactor = 0.0;
-
-        Paint segPaint = Paint()
-          ..color = const Color(0xFF00E676).withOpacity((0.2 + (pulseFactor * 0.5) + (beatIntensity * 0.2)) * adasOpacity)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 3.5 + (pulseFactor * 1.5)
-          ..strokeCap = StrokeCap.round
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5.0);
-
-        canvas.drawPath(segment, segPaint);
-      }
-    }
-
-    final List<ui.PathMetric> rightMetrics = rightLane.computeMetrics().toList();
-    if (rightMetrics.isNotEmpty) {
-      final ui.PathMetric metric = rightMetrics.first;
-      final double totalLen = metric.length;
-      const int segments = 16;
-      for (int i = 0; i < segments; i++) {
-        double startFraction = i / segments;
-        double endFraction = (i + 1) / segments;
-        Path segment = metric.extractPath(startFraction * totalLen, endFraction * totalLen);
-
-        double distanceToScan = (startFraction - scanPhase).abs();
-        if (distanceToScan > 0.5) distanceToScan = 1.0 - distanceToScan;
-        double pulseFactor = 1.0 - (distanceToScan * 2.0);
-        if (pulseFactor < 0.0) pulseFactor = 0.0;
-
-        Paint segPaint = Paint()
-          ..color = const Color(0xFF00E676).withOpacity((0.2 + (pulseFactor * 0.5) + (beatIntensity * 0.2)) * adasOpacity)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 3.5 + (pulseFactor * 1.5)
-          ..strokeCap = StrokeCap.round
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5.0);
-
-        canvas.drawPath(segment, segPaint);
-      }
-    }
+    Paint outerGlow = Paint()
+      ..color = const Color(0xFF00E676).withOpacity((0.25 + (beatIntensity * 0.25)) * adasOpacity)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4.0 + (beatIntensity * 2.0)
+      ..strokeCap = StrokeCap.round
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6.0);
 
     Paint innerCore = Paint()
-      ..color = Colors.white.withOpacity(0.85 * adasOpacity)
+      ..color = Colors.white.withOpacity(0.9 * adasOpacity)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.8
+      ..strokeWidth = 2.0
       ..strokeCap = StrokeCap.round;
 
+    canvas.drawPath(leftLane, outerGlow);
+    canvas.drawPath(rightLane, outerGlow);
     canvas.drawPath(leftLane, innerCore);
     canvas.drawPath(rightLane, innerCore);
 
+    // Diff D: Traveling scan pulse along both lane lines
+    double scanPhase = (displacement * 1.5) % 1.0;
+    for (final path in [leftLane, rightLane]) {
+      final metrics = path.computeMetrics().toList();
+      for (final metric in metrics) {
+        double scanPos = metric.length * scanPhase;
+        double segLen = metric.length * 0.12;
+        double start = (scanPos - segLen / 2).clamp(0.0, metric.length);
+        double end = (scanPos + segLen / 2).clamp(0.0, metric.length);
+        if (end > start) {
+          final segment = metric.extractPath(start, end);
+          canvas.drawPath(
+            segment,
+            Paint()
+              ..color = Colors.white.withOpacity(0.9 * adasOpacity)
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 3.5
+              ..strokeCap = StrokeCap.round
+              ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4.0),
+          );
+        }
+      }
+    }
+
     Paint chevronPaint = Paint()
-      ..color = const Color(0xFF00E676).withOpacity((0.45 + (beatIntensity * 0.25)) * adasOpacity)
+      ..color = const Color(0xFF00E676).withOpacity((0.5 + (beatIntensity * 0.3)) * adasOpacity)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.6
+      ..strokeWidth = 1.8
       ..strokeCap = StrokeCap.round;
 
     double flowOffset = (displacement * 140.0) % 40.0;
@@ -3025,28 +3070,30 @@ class ArcadeMotionHighwayPainter extends CustomPainter {
     );
   }
 
-  void _drawCornerBrackets(Canvas canvas, Rect bbox, Color color, double ageSeconds) {
-    double fadeAlpha = (ageSeconds / 0.15).clamp(0.0, 1.0);
-    Paint bracketPaint = Paint()
-      ..color = color.withOpacity(0.9 * fadeAlpha)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.8
-      ..strokeCap = StrokeCap.square;
-
-    double lenW = bbox.width * 0.22;
-    double lenH = bbox.height * 0.22;
-
-    canvas.drawPath(Path()..moveTo(bbox.left, bbox.top + lenH)..lineTo(bbox.left, bbox.top)..lineTo(bbox.left + lenW, bbox.top), bracketPaint);
-    canvas.drawPath(Path()..moveTo(bbox.right - lenW, bbox.top)..lineTo(bbox.right, bbox.top)..lineTo(bbox.right, bbox.top + lenH), bracketPaint);
-    canvas.drawPath(Path()..moveTo(bbox.left, bbox.bottom - lenH)..lineTo(bbox.left, bbox.bottom)..lineTo(bbox.left + lenW, bbox.bottom), bracketPaint);
-    canvas.drawPath(Path()..moveTo(bbox.right - lenW, bbox.bottom)..lineTo(bbox.right, bbox.bottom)..lineTo(bbox.right, bbox.bottom - lenH), bracketPaint);
+  // Diff A: Corner Brackets method for vehicle detection boxes
+  void _drawCornerBrackets(Canvas canvas, Rect r, Color color, double strokeWidth) {
+    final double armLen = math.min(r.width, r.height) * 0.22;
+    final Paint p = Paint()
+      ..color = color
+      ..strokeWidth = strokeWidth
+      ..strokeCap = StrokeCap.round;
+    // top-left
+    canvas.drawLine(r.topLeft, r.topLeft + Offset(armLen, 0), p);
+    canvas.drawLine(r.topLeft, r.topLeft + Offset(0, armLen), p);
+    // top-right
+    canvas.drawLine(r.topRight, r.topRight + Offset(-armLen, 0), p);
+    canvas.drawLine(r.topRight, r.topRight + Offset(0, armLen), p);
+    // bottom-left
+    canvas.drawLine(r.bottomLeft, r.bottomLeft + Offset(armLen, 0), p);
+    canvas.drawLine(r.bottomLeft, r.bottomLeft + Offset(0, -armLen), p);
+    // bottom-right
+    canvas.drawLine(r.bottomRight, r.bottomRight + Offset(-armLen, 0), p);
+    canvas.drawLine(r.bottomRight, r.bottomRight + Offset(0, -armLen), p);
   }
 
   void _drawSurroundingTraffic(Canvas canvas, Size size, double cx, double horizonY, double turnShift) {
     final sorted = List<SimVehicle>.from(trafficList)
       ..sort((a, b) => b.distanceMeters.compareTo(a.distanceMeters));
-
-    double currentTime = DateTime.now().millisecondsSinceEpoch.toDouble();
 
     for (var v in sorted) {
       if (v.distanceMeters < 3.5 || v.distanceMeters > 95.0) continue;
@@ -3083,8 +3130,8 @@ class ArcadeMotionHighwayPainter extends CustomPainter {
       Color boxColor = v.lane == 0 ? const Color(0xFF00E676) : Colors.cyanAccent;
       Rect bbox = Rect.fromCenter(center: pos, width: w * 1.18, height: h * 1.18);
       
-      double ageSec = (currentTime - v.firstSeenTime) / 1000.0;
-      _drawCornerBrackets(canvas, bbox, boxColor, ageSec);
+      // Diff A: Applied Corner Brackets method
+      _drawCornerBrackets(canvas, bbox, boxColor, 1.8);
 
       TextPainter tag = TextPainter(
         text: TextSpan(text: "${v.distanceMeters.toStringAsFixed(1)} m", style: TextStyle(color: Colors.white, fontSize: 8.0 * scale, fontWeight: FontWeight.bold, backgroundColor: Colors.black87)),
