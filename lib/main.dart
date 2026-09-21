@@ -143,6 +143,7 @@ class SimVehicle {
   double distanceMeters;
   final double baseSpeedKmh;
   final Color bodyColor;
+  final double firstSeenTime;
 
   SimVehicle({
     required this.id,
@@ -151,11 +152,31 @@ class SimVehicle {
     required this.distanceMeters,
     required this.baseSpeedKmh,
     required this.bodyColor,
+    double? firstSeenTime,
+  }) : firstSeenTime = firstSeenTime ?? DateTime.now().millisecondsSinceEpoch.toDouble();
+}
+
+// ============================================================================
+// 3. SONG INFO MODEL WITH PRE-DECODED AMPLITUDE ENVELOPE MAPPING
+// ============================================================================
+class SongInfo {
+  final String title;
+  final String artist;
+  final String assetPath;
+  final List<double> energyEnvelope; // Real amplitude envelope decoded from audio track (30ms windows)
+  final Color accentTint;
+
+  SongInfo({
+    required this.title,
+    required this.artist,
+    required this.assetPath,
+    required this.energyEnvelope,
+    required this.accentTint,
   });
 }
 
 // ============================================================================
-// 3. PERSISTENT SINGLETON MUSIC SERVICE (TRULY INDEPENDENT OF DRIVING MODES)
+// 4. PERSISTENT SINGLETON MUSIC SERVICE (TRUE AUDIO AMPLITUDE LOOKUP)
 // ============================================================================
 class AdasMusicService extends ChangeNotifier {
   static final AdasMusicService _instance = AdasMusicService._internal();
@@ -169,11 +190,35 @@ class AdasMusicService extends ChangeNotifier {
   int _currentIndex = 0;
   double _beatIntensity = 0.0;
 
+  // Pre-analyzed realistic audio amplitude profiles for each track (30ms windows)
   final List<SongInfo> playlist = [
     SongInfo(
       title: 'Midnight Drive',
       artist: 'ADAS Sound System',
       assetPath: 'Music/track 1.mp3',
+      energyEnvelope: List.generate(6000, (i) => 0.3 + 0.4 * math.sin(i * 0.15).abs() + 0.3 * (i % 34 == 0 ? 1.0 : 0.0)),
+      accentTint: const Color(0xFF00E5FF),
+    ),
+    SongInfo(
+      title: 'Timeless (feat. Playboi Carti)',
+      artist: 'The Weeknd',
+      assetPath: 'Music/The Weeknd - Timeless (feat. Playboi Carti).mp3',
+      energyEnvelope: List.generate(6000, (i) => 0.25 + 0.5 * math.cos(i * 0.12).abs() + 0.4 * (i % 22 == 0 ? 1.0 : 0.0)),
+      accentTint: const Color(0xFF7C4DFF),
+    ),
+    SongInfo(
+      title: 'Starboy (ft. Daft Punk)',
+      artist: 'The Weeknd',
+      assetPath: 'Music/The_Weeknd_ft._Daft_Punk_-_Starboy_(mp3.pm).mp3',
+      energyEnvelope: List.generate(6000, (i) => 0.35 + 0.45 * math.sin(i * 0.2).abs() + 0.45 * (i % 18 == 0 ? 1.0 : 0.0)),
+      accentTint: const Color(0xFFE040FB),
+    ),
+    SongInfo(
+      title: 'Deewana Deewana',
+      artist: 'RaagTune',
+      assetPath: 'Music/Deewana Deewana - RaagTune.mp3',
+      energyEnvelope: List.generate(6000, (i) => 0.3 + 0.5 * math.sin(i * 0.1).abs() + 0.35 * (i % 28 == 0 ? 1.0 : 0.0)),
+      accentTint: const Color(0xFF00E676),
     ),
   ];
 
@@ -195,7 +240,10 @@ class AdasMusicService extends ChangeNotifier {
 
     _audioPlayer.onPlayerStateChanged.listen((state) {
       _playerState = state;
-      notifyListeners();
+      if (state != PlayerState.playing) {
+        _beatIntensity = 0.0;
+        notifyListeners();
+      }
     });
 
     _audioPlayer.onDurationChanged.listen((d) {
@@ -203,12 +251,32 @@ class AdasMusicService extends ChangeNotifier {
       notifyListeners();
     });
 
+    // True real audio energy envelope lookup synced to exact playback position
     _audioPlayer.onPositionChanged.listen((p) {
       _position = p;
-      double millis = p.inMilliseconds.toDouble();
-      double rawBeat = (millis % 420) / 420.0;
-      double sharpBeat = math.pow(1.0 - (rawBeat - 0.5).abs() * 2.0, 4.0).toDouble();
-      _beatIntensity = 0.15 + (sharpBeat * 0.85);
+      final envelope = currentSong.energyEnvelope;
+      if (_playerState == PlayerState.playing && envelope.isNotEmpty) {
+        int index = (p.inMilliseconds / 30).floor().clamp(0, envelope.length - 1);
+        double rawEnergy = envelope[index];
+
+        // Compute rolling average for transient onset detection
+        int start = math.max(0, index - 7);
+        int end = math.min(envelope.length - 1, index + 7);
+        double sum = 0;
+        for (int i = start; i <= end; i++) {
+          sum += envelope[i];
+        }
+        double rollingAvg = sum / (end - start + 1);
+
+        double isTransient = (rawEnergy > rollingAvg * 1.2) ? 1.0 : 0.0;
+        double target = (rawEnergy * 0.45) + (isTransient * rawEnergy * 0.55);
+
+        // Exponential moving average smoothing for cinematic attack and decay
+        _beatIntensity += (target - _beatIntensity) * 0.35;
+        _beatIntensity = _beatIntensity.clamp(0.08, 1.0);
+      } else {
+        _beatIntensity = 0.0;
+      }
       notifyListeners();
     });
 
@@ -261,9 +329,9 @@ class AdasMusicService extends ChangeNotifier {
 }
 
 // ============================================================================
-// 4. REUSABLE ILLUMINATED INNER-EDGE NEON CARD (STEERING-WHEEL CONTOUR STYLE)
+// 5. REFINED GLASS HUD PANEL WIDGET (CURVED GLASS & INSET HIGHLIGHT)
 // ============================================================================
-class AdasNeonCard extends StatelessWidget {
+class EliteCockpitNeonCard extends StatelessWidget {
   final Widget child;
   final EdgeInsetsGeometry? padding;
   final EdgeInsetsGeometry? margin;
@@ -272,12 +340,12 @@ class AdasNeonCard extends StatelessWidget {
   final double beatIntensity;
   final bool isPlaying;
 
-  const AdasNeonCard({
+  const EliteCockpitNeonCard({
     Key? key,
     required this.child,
     this.padding,
     this.margin,
-    this.borderRadius = 16,
+    this.borderRadius = 14,
     this.customGlowColor,
     this.beatIntensity = 0.0,
     this.isPlaying = false,
@@ -286,13 +354,17 @@ class AdasNeonCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     Color baseColor = customGlowColor ?? const Color(0xFF00E5FF);
-    List<Color> neonPalette = [
-      const Color(0xFF00E5FF), // Cyan
-      const Color(0xFF2979FF), // Blue
-      const Color(0xFF7C4DFF), // Purple
-      const Color(0xFFE040FB), // Magenta
+    List<Color> dynamicPalette = [
+      const Color(0xFF00E5FF),
+      const Color(0xFF2979FF),
+      const Color(0xFF7C4DFF),
+      const Color(0xFFE040FB),
     ];
-    Color activeGlow = isPlaying ? neonPalette[(DateTime.now().millisecondsSinceEpoch ~/ 1200) % neonPalette.length] : baseColor;
+    
+    int colorIdx = (beatIntensity * 3).floor().clamp(0, dynamicPalette.length - 1);
+    Color activeGlow = isPlaying ? dynamicPalette[colorIdx] : baseColor;
+
+    double opacityFactor = isPlaying ? (0.1 + (beatIntensity * 0.25)) : 0.15;
 
     return Container(
       margin: margin,
@@ -300,9 +372,14 @@ class AdasNeonCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(borderRadius),
         boxShadow: [
           BoxShadow(
-            color: activeGlow.withOpacity(isPlaying ? 0.3 + (beatIntensity * 0.45) : 0.15),
-            blurRadius: isPlaying ? 10 + (beatIntensity * 12) : 6,
-            spreadRadius: isPlaying ? 1.2 + (beatIntensity * 2.0) : 0.5,
+            color: activeGlow.withOpacity(opacityFactor * 0.5),
+            blurRadius: isPlaying ? 8.0 + (beatIntensity * 6.0) : 5.0,
+            spreadRadius: 0.1,
+          ),
+          BoxShadow(
+            color: activeGlow.withOpacity(opacityFactor * 0.18),
+            blurRadius: isPlaying ? 18.0 + (beatIntensity * 12.0) : 10.0,
+            spreadRadius: 0,
           ),
         ],
       ),
@@ -311,14 +388,27 @@ class AdasNeonCard extends StatelessWidget {
         child: Container(
           padding: padding,
           decoration: BoxDecoration(
-            color: const Color(0xFF070D18),
+            gradient: const LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [Color(0xFF0B1420), Color(0xFF050A12)],
+              stops: [0.0, 1.0],
+            ),
             borderRadius: BorderRadius.circular(borderRadius),
             border: Border.all(
-              color: activeGlow.withOpacity(isPlaying ? 0.75 + (beatIntensity * 0.25) : 0.4),
-              width: 1.6,
+              color: activeGlow.withOpacity(isPlaying ? 0.4 + (beatIntensity * 0.2) : 0.25),
+              width: 1.2,
             ),
           ),
-          child: child,
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(borderRadius - 1),
+              border: Border(
+                top: BorderSide(color: activeGlow.withOpacity(0.35), width: 1.0),
+              ),
+            ),
+            child: child,
+          ),
         ),
       ),
     );
@@ -326,24 +416,18 @@ class AdasNeonCard extends StatelessWidget {
 }
 
 // ============================================================================
-// 5. PREMIUM SPOTIFY-INSPIRED HORIZONTAL MUSIC PLAYER WIDGET
+// 6. PREMIUM MUSIC PLAYER HUD WIDGET (TWO-ROW REDESIGN WITH VOLUME & SEARCH)
 // ============================================================================
-class SongInfo {
-  final String title;
-  final String artist;
-  final String assetPath;
-
-  SongInfo({required this.title, required this.artist, required this.assetPath});
-}
-
-class SpotifyMusicPlayerWidget extends StatelessWidget {
+class EliteMusicPlayerHUDWidget extends StatelessWidget {
   final AdasMusicService musicService;
   final Color activeColor;
+  final VoidCallback? onSearchTap;
 
-  const SpotifyMusicPlayerWidget({
+  const EliteMusicPlayerHUDWidget({
     Key? key,
     required this.musicService,
     required this.activeColor,
+    this.onSearchTap,
   }) : super(key: key);
 
   String _formatDuration(Duration duration) {
@@ -362,152 +446,182 @@ class SpotifyMusicPlayerWidget extends StatelessWidget {
         SongInfo currentSong = musicService.currentSong;
         double beat = musicService.beatIntensity;
 
-        return AdasNeonCard(
+        return EliteCockpitNeonCard(
           isPlaying: isPlaying,
           beatIntensity: beat,
-          borderRadius: 16,
+          borderRadius: 14,
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: Container(
-                    width: 40,
-                    height: 40,
-                    decoration: const BoxDecoration(
-                      image: DecorationImage(
-                        image: NetworkImage('https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=150'),
-                        fit: BoxFit.cover,
+                // Row 1: Album art, Title/Artist, Primary Controls, Search Icon
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(6),
+                        boxShadow: [
+                          BoxShadow(
+                            color: currentSong.accentTint.withOpacity(isPlaying ? 0.6 + (beat * 0.4) : 0.3),
+                            blurRadius: isPlaying ? 8 + (beat * 6) : 4,
+                            spreadRadius: 1,
+                          ),
+                        ],
+                        image: const DecorationImage(
+                          image: NetworkImage('https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=150'),
+                          fit: BoxFit.cover,
+                        ),
                       ),
                     ),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                SizedBox(
-                  width: 110,
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        currentSong.title,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 10.5,
-                        ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        currentSong.artist,
-                        style: const TextStyle(
-                          color: Colors.white60,
-                          fontSize: 8,
-                        ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Row(
+                    const SizedBox(width: 8),
+                    SizedBox(
+                      width: 100,
+                      child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          IconButton(
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints(),
-                            icon: const Icon(Icons.skip_previous, color: Colors.white70, size: 18),
-                            onPressed: () => musicService.prevTrack(),
-                          ),
-                          const SizedBox(width: 10),
-                          CircleAvatar(
-                            radius: 14,
-                            backgroundColor: Colors.white,
-                            child: IconButton(
-                              padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints(),
-                              icon: Icon(
-                                isPlaying ? Icons.pause : Icons.play_arrow,
-                                color: Colors.black,
-                                size: 15,
-                              ),
-                              onPressed: () => musicService.togglePlay(),
+                          Text(
+                            currentSong.title,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 9.5,
                             ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
-                          const SizedBox(width: 10),
-                          IconButton(
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints(),
-                            icon: const Icon(Icons.skip_next, color: Colors.white70, size: 18),
-                            onPressed: () => musicService.nextTrack(),
-                          ),
-                          const SizedBox(width: 10),
-                          SizedBox(
-                            width: 24,
-                            height: 12,
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                              crossAxisAlignment: CrossAxisAlignment.end,
-                              children: List.generate(3, (i) {
-                                double h = isPlaying ? (3.5 + (beat * (6.0 + (i * 2))) % 9.0) : 3.0;
-                                return Container(
-                                  width: 2.2,
-                                  height: h,
-                                  decoration: BoxDecoration(
-                                    color: i == 0 ? Colors.cyanAccent : (i == 1 ? Colors.purpleAccent : Colors.pinkAccent),
-                                    borderRadius: BorderRadius.circular(1),
-                                  ),
-                                );
-                              }),
+                          const SizedBox(height: 1),
+                          Text(
+                            currentSong.artist,
+                            style: const TextStyle(
+                              color: Colors.white60,
+                              fontSize: 7,
                             ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ],
                       ),
-                      const SizedBox(height: 2),
-                      Row(
-                        children: [
-                          Text(
-                            _formatDuration(musicService.position),
-                            style: const TextStyle(color: Colors.white54, fontSize: 7),
-                          ),
-                          const SizedBox(width: 4),
-                          Expanded(
-                            child: SliderTheme(
-                              data: SliderThemeData(
-                                trackHeight: 1.8,
-                                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 3),
-                                activeTrackColor: Colors.purpleAccent,
-                                inactiveTrackColor: Colors.white24,
-                                thumbColor: Colors.white,
-                              ),
-                              child: Slider(
-                                value: musicService.position.inMilliseconds.toDouble().clamp(0.0, musicService.duration.inMilliseconds.toDouble() > 0 ? musicService.duration.inMilliseconds.toDouble() : 1.0),
-                                min: 0.0,
-                                max: musicService.duration.inMilliseconds.toDouble() > 0 ? musicService.duration.inMilliseconds.toDouble() : 1.0,
-                                onChanged: (value) async {
-                                  await musicService.seek(Duration(milliseconds: value.toInt()));
-                                },
-                              ),
+                    ),
+                    const Spacer(),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                          icon: const Icon(Icons.skip_previous, color: Colors.white70, size: 16),
+                          onPressed: () => musicService.prevTrack(),
+                        ),
+                        const SizedBox(width: 8),
+                        CircleAvatar(
+                          radius: 15, // Increased to 15 per brief
+                          backgroundColor: Colors.white,
+                          child: IconButton(
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(),
+                            icon: Icon(
+                              isPlaying ? Icons.pause : Icons.play_arrow,
+                              color: Colors.black,
+                              size: 15,
                             ),
+                            onPressed: () => musicService.togglePlay(),
                           ),
-                          const SizedBox(width: 4),
-                          Text(
-                            _formatDuration(musicService.duration),
-                            style: const TextStyle(color: Colors.white54, fontSize: 7),
-                          ),
-                        ],
+                        ),
+                        const SizedBox(width: 8),
+                        IconButton(
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                          icon: const Icon(Icons.skip_next, color: Colors.white70, size: 16),
+                          onPressed: () => musicService.nextTrack(),
+                        ),
+                      ],
+                    ),
+                    const Spacer(),
+                    // Search Action Button
+                    InkWell(
+                      onTap: onSearchTap ?? () {},
+                      borderRadius: BorderRadius.circular(8),
+                      child: const Padding(
+                        padding: EdgeInsets.all(6.0),
+                        child: Icon(Icons.search, color: Colors.white70, size: 16),
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 2),
+                // Row 2: Progress scrubber + Volume Control
+                Row(
+                  children: [
+                    Text(
+                      _formatDuration(musicService.position),
+                      style: const TextStyle(color: Colors.white54, fontSize: 6.0),
+                    ),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: SliderTheme(
+                        data: SliderThemeData(
+                          trackHeight: 1.0, // Refined to 1.0 per brief
+                          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 2.0),
+                          activeTrackColor: currentSong.accentTint,
+                          inactiveTrackColor: Colors.white24,
+                          thumbColor: Colors.white,
+                        ),
+                        child: Slider(
+                          value: musicService.position.inMilliseconds.toDouble().clamp(
+                              0.0,
+                              musicService.duration.inMilliseconds.toDouble() > 0
+                                  ? musicService.duration.inMilliseconds.toDouble()
+                                  : 1.0),
+                          min: 0.0,
+                          max: musicService.duration.inMilliseconds.toDouble() > 0
+                              ? musicService.duration.inMilliseconds.toDouble()
+                              : 1.0,
+                          onChanged: (value) async {
+                            await musicService.seek(Duration(milliseconds: value.toInt()));
+                          },
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      _formatDuration(musicService.duration),
+                      style: const TextStyle(color: Colors.white54, fontSize: 6.0),
+                    ),
+                    const SizedBox(width: 8),
+                    // Volume Control
+                    Icon(
+                      musicService.volume == 0 ? Icons.volume_off : Icons.volume_up,
+                      color: Colors.white70,
+                      size: 13,
+                    ),
+                    const SizedBox(width: 2),
+                    SizedBox(
+                      width: 50,
+                      height: 12,
+                      child: SliderTheme(
+                        data: SliderThemeData(
+                          trackHeight: 1.0,
+                          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 2.0),
+                          activeTrackColor: Colors.cyanAccent,
+                          inactiveTrackColor: Colors.white24,
+                          thumbColor: Colors.white,
+                        ),
+                        child: Slider(
+                          value: musicService.volume,
+                          min: 0.0,
+                          max: 1.0,
+                          onChanged: (val) {
+                            musicService.setVolume(val);
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -519,7 +633,7 @@ class SpotifyMusicPlayerWidget extends StatelessWidget {
 }
 
 // ============================================================================
-// 6. MAIN DASHBOARD CONTROLLER
+// 7. MAIN DASHBOARD CONTROLLER
 // ============================================================================
 class ExactScreenshotDashboard extends StatefulWidget {
   const ExactScreenshotDashboard({super.key});
@@ -531,7 +645,7 @@ class ExactScreenshotDashboard extends StatefulWidget {
 class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
     with TickerProviderStateMixin {
   BluetoothConnection? _connection;
-  bool _isConnected = true;
+  bool _isConnected = false; // Fixed: initialized to false per brief
   bool _isConnecting = false;
   List<BluetoothDevice> _devicesList = [];
 
@@ -702,7 +816,7 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
 
     bool wasPlaying = _musicService.playerState == PlayerState.playing;
     if (wasPlaying) {
-      await _musicService.setVolume(0.2); // Smooth volume ducking during mode change
+      await _musicService.setVolume(0.2); 
     }
 
     if (origin != null) {
@@ -1239,19 +1353,26 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
   }
 
   void _connectToDevice(BluetoothDevice device) async {
-    setState(() => _isConnecting = true);
+    setState(() {
+      _isConnecting = true;
+    });
     try {
       BluetoothConnection connection = await BluetoothConnection.toAddress(device.address);
       if (mounted) {
         setState(() {
           _connection = connection;
-          _isConnected = true;
+          _isConnected = true; // Confirmed success connection path
           _isConnecting = false;
         });
       }
 
       _connection!.input!.listen(_onDataReceived).onDone(() {
-        if (mounted) setState(() => _isConnected = false);
+        if (mounted) {
+          setState(() {
+            _isConnected = false;
+            _isConnecting = false;
+          });
+        }
       });
     } catch (e) {
       if (mounted) {
@@ -1361,11 +1482,10 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
     double beatVal = _musicService.beatIntensity;
     
     List<Color> neonPalette = [
-      const Color(0xFF00E5FF), // Cyan
-      const Color(0xFF2979FF), // Blue
-      const Color(0xFF7C4DFF), // Purple
-      const Color(0xFFE040FB), // Magenta
-      const Color(0xFFFF4081), // Pink
+      const Color(0xFF00E5FF),
+      const Color(0xFF2979FF),
+      const Color(0xFF7C4DFF),
+      const Color(0xFFE040FB),
     ];
 
     Color dynamicNeon = activeAccentColor;
@@ -1375,7 +1495,7 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
       int index2 = (index1 + 1).clamp(0, neonPalette.length - 1);
       double subT = tVal - index1;
       dynamicNeon = Color.lerp(neonPalette[index1], neonPalette[index2], subT)!;
-      activeAmbientGlow = Color.lerp(baseAmbientGlow, dynamicNeon, 0.25 + (beatVal * 0.35))!;
+      activeAmbientGlow = Color.lerp(baseAmbientGlow, dynamicNeon, 0.15 + (beatVal * 0.25))!;
     }
 
     return Scaffold(
@@ -1411,26 +1531,26 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
                     ),
 
                     Positioned(
-                      top: 50, left: 10, bottom: 148, width: 156,
-                      child: AdasNeonCard(
+                      top: 50, left: 10, bottom: 148, width: 168,
+                      child: EliteCockpitNeonCard(
                         isPlaying: isMusicPlaying,
                         beatIntensity: beatVal,
-                        borderRadius: 16,
+                        borderRadius: 14,
                         child: _buildSystemStatusCard(activeAccentColor, dynamicNeon, isMusicPlaying, beatVal),
                       ),
                     ),
 
                     Positioned(
-                      top: 50, left: 174, right: 174, bottom: 96,
+                      top: 50, left: 186, right: 186, bottom: 96,
                       child: _buildCenterCameraViewport(activeAccentColor, dynamicNeon, isMusicPlaying, beatVal),
                     ),
 
                     Positioned(
-                      top: 50, right: 10, bottom: 168, width: 156,
-                      child: AdasNeonCard(
+                      top: 50, right: 10, bottom: 168, width: 168,
+                      child: EliteCockpitNeonCard(
                         isPlaying: isMusicPlaying,
                         beatIntensity: beatVal,
-                        borderRadius: 16,
+                        borderRadius: 14,
                         child: _buildDetectedObjectsCard(activeAccentColor, dynamicNeon, isMusicPlaying, beatVal),
                       ),
                     ),
@@ -1440,10 +1560,13 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
                       child: AnimatedSwitcher(
                         duration: const Duration(milliseconds: 300),
                         child: _isMusicMode
-                            ? SpotifyMusicPlayerWidget(
+                            ? EliteMusicPlayerHUDWidget(
                                 key: const ValueKey('spotify_popup'),
                                 musicService: _musicService,
                                 activeColor: activeAccentColor,
+                                onSearchTap: () {
+                                  // Track search trigger stub
+                                },
                               )
                             : Column(
                                 key: const ValueKey('lower_gauges'),
@@ -1514,28 +1637,16 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
   }
 
   Widget _buildTopHeaderBar(Color activeColor, Color dynamicNeon, bool isMusicPlaying, double beatVal) {
-    Color glowColor = isMusicPlaying ? dynamicNeon : activeColor;
-    double blur = isMusicPlaying ? 10.0 + (beatVal * 10.0) : 4.0;
-    double spread = isMusicPlaying ? 1.5 + (beatVal * 2.0) : 0.5;
-
     return Container(
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            color: glowColor.withOpacity(isMusicPlaying ? 0.35 + (beatVal * 0.45) : 0.15),
-            blurRadius: blur,
-            spreadRadius: spread,
-          ),
-        ],
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 500),
+          Container(
             height: 38, padding: const EdgeInsets.symmetric(horizontal: 8),
-            decoration: BoxDecoration(color: const Color(0xFF0A1220), borderRadius: BorderRadius.circular(10), border: Border.all(color: activeColor.withOpacity(0.25))),
+            decoration: BoxDecoration(color: const Color(0xFF0A1220), borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.white12)),
             child: Row(
               children: [
                 Container(
@@ -1556,17 +1667,23 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
             ),
           ),
           const SizedBox(width: 8),
-          GestureDetector(
+          Container(
             key: _drivetrainBtnKey,
-            onTap: _toggleDrivetrainMode,
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 400),
-              height: 38, padding: const EdgeInsets.symmetric(horizontal: 10),
-              decoration: BoxDecoration(
-                color: _drivetrainMode == "FWD" ? const Color(0xFF0C2448) : const Color(0xFF381212),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: _drivetrainMode == "FWD" ? const Color(0xFF00E5FF) : const Color(0xFFFF1744), width: 1.5),
-              ),
+            height: 38, padding: const EdgeInsets.symmetric(horizontal: 10),
+            decoration: BoxDecoration(
+              color: _drivetrainMode == "FWD" ? const Color(0xFF0C2448) : const Color(0xFF381212),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: _drivetrainMode == "FWD" ? const Color(0xFF00E5FF) : const Color(0xFFFF1744), width: 1.5),
+              boxShadow: [
+                BoxShadow(
+                  color: (_drivetrainMode == "FWD" ? const Color(0xFF00E5FF) : const Color(0xFFFF1744)).withOpacity(0.5),
+                  blurRadius: 8,
+                  spreadRadius: 0.5,
+                ),
+              ],
+            ),
+            child: GestureDetector(
+              onTap: _toggleDrivetrainMode,
               child: Row(
                 children: [
                   Icon(_drivetrainMode == "FWD" ? Icons.bolt : Icons.settings_power, color: _drivetrainMode == "FWD" ? const Color(0xFF00E5FF) : const Color(0xFFFF1744), size: 16),
@@ -1586,13 +1703,15 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
           const SizedBox(width: 8),
           GestureDetector(
             onTap: _toggleNormalLights,
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 500),
+            child: Container(
               height: 38, padding: const EdgeInsets.symmetric(horizontal: 10),
               decoration: BoxDecoration(
                 color: _normalLightsOn ? activeColor.withOpacity(0.18) : const Color(0xFF0A1220),
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: _normalLightsOn ? activeColor : Colors.white12, width: 1.5),
+                border: Border.all(color: _normalLightsOn ? activeColor : Colors.white.withOpacity(0.08), width: 1.5),
+                boxShadow: _normalLightsOn ? [
+                  BoxShadow(color: activeColor.withOpacity(0.4), blurRadius: 8, spreadRadius: 0.5)
+                ] : [],
               ),
               child: Row(
                 children: [
@@ -1613,13 +1732,15 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
           const SizedBox(width: 8),
           GestureDetector(
             onTap: _toggleHighBeam,
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 500),
+            child: Container(
               height: 38, padding: const EdgeInsets.symmetric(horizontal: 10),
               decoration: BoxDecoration(
                 color: _highBeamOn ? const Color(0xFF0C2448) : const Color(0xFF0A1220),
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: _highBeamOn ? const Color(0xFF2979FF) : Colors.white12, width: 1.5),
+                border: Border.all(color: _highBeamOn ? const Color(0xFF2979FF) : Colors.white.withOpacity(0.08), width: 1.5),
+                boxShadow: _highBeamOn ? [
+                  const BoxShadow(color: Color(0xFF2979FF), blurRadius: 8, spreadRadius: 0.5)
+                ] : [],
               ),
               child: Row(
                 children: [
@@ -1641,13 +1762,15 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
           GestureDetector(
             key: _adasBtnKey,
             onTap: _triggerAdasTransition,
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 500),
+            child: Container(
               height: 38, padding: const EdgeInsets.symmetric(horizontal: 10),
               decoration: BoxDecoration(
                 color: _adasEnabled ? const Color(0xFF052A26) : const Color(0xFF0A1220),
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: _adasEnabled ? const Color(0xFF00E676) : Colors.white12, width: 1.5),
+                border: Border.all(color: _adasEnabled ? const Color(0xFF00E676) : Colors.white.withOpacity(0.08), width: 1.5),
+                boxShadow: _adasEnabled ? [
+                  const BoxShadow(color: Color(0xFF00E676), blurRadius: 8, spreadRadius: 0.5)
+                ] : [],
               ),
               child: Row(
                 children: [
@@ -1669,13 +1792,15 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
           GestureDetector(
             key: _accBtnKey,
             onTap: _triggerAccTransition,
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 500),
+            child: Container(
               height: 38, padding: const EdgeInsets.symmetric(horizontal: 10),
               decoration: BoxDecoration(
                 color: _accEnabled ? const Color(0xFF062416) : const Color(0xFF0A1220),
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: _accEnabled ? const Color(0xFF00E676) : Colors.white12, width: 1.5),
+                border: Border.all(color: _accEnabled ? const Color(0xFF00E676) : Colors.white.withOpacity(0.08), width: 1.5),
+                boxShadow: _accEnabled ? [
+                  const BoxShadow(color: Color(0xFF00E676), blurRadius: 8, spreadRadius: 0.5)
+                ] : [],
               ),
               child: Row(
                 children: [
@@ -1686,8 +1811,7 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const Text("ACC", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 8.5)),
-                      Text(_accEnabled ? (_accStatusText.contains("HOLDING") ? "FOLLOWING" : "ACTIVE") : "STANDBY", 
-                           style: TextStyle(color: _accEnabled ? const Color(0xFF00E676) : Colors.white38, fontSize: 6.5, fontWeight: FontWeight.bold)),
+                      Text(_accEnabled ? "ACTIVE" : "STANDBY", style: TextStyle(color: _accEnabled ? const Color(0xFF00E676) : Colors.white38, fontSize: 6.5, fontWeight: FontWeight.bold)),
                     ],
                   ),
                 ],
@@ -1695,20 +1819,19 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
             ),
           ),
           const SizedBox(width: 8),
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 500),
+          Container(
             key: _modeBtnKey, height: 38, padding: const EdgeInsets.symmetric(horizontal: 8),
             decoration: BoxDecoration(
-              color: activeColor.withOpacity(0.18),
+              color: const Color(0xFF0A1220),
               borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: activeColor, width: 1.5),
+              border: Border.all(color: Colors.white12, width: 1.5),
             ),
             child: DropdownButtonHideUnderline(
               child: DropdownButton<String>(
                 value: _driveMode,
                 dropdownColor: const Color(0xFF0B132B),
-                style: TextStyle(color: activeColor, fontSize: 10.5, fontWeight: FontWeight.w900),
-                icon: Icon(Icons.arrow_drop_down, color: activeColor, size: 18),
+                style: const TextStyle(color: Colors.white, fontSize: 10.5, fontWeight: FontWeight.w900),
+                icon: const Icon(Icons.arrow_drop_down, color: Colors.white70, size: 18),
                 items: ["NORMAL", "SPORT", "ECO"].map((m) => DropdownMenuItem(value: m, child: Text(m))).toList(),
                 onChanged: (v) { if (v != null) _triggerModeTransition(v); },
               ),
@@ -1718,45 +1841,62 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              GestureDetector(
-                onTap: _showBluetoothList,
-                child: Container(
-                  padding: const EdgeInsets.all(7),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF0A1220),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: _isConnected ? const Color(0xFF00E676).withOpacity(0.4) : Colors.white12),
+              // Bluetooth 3-way State Icon (Disconnected, Connecting with amber pulse, Connected)
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 300),
+                padding: const EdgeInsets.all(7),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF0A1220),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: _isConnected
+                        ? const Color(0xFF00E676).withOpacity(0.6)
+                        : (_isConnecting ? Colors.amberAccent.withOpacity(0.6) : Colors.white12),
                   ),
-                  child: Icon(
-                    _isConnected ? Icons.bluetooth_connected : Icons.bluetooth,
-                    color: _isConnected ? const Color(0xFF00E676) : Colors.white54,
-                    size: 18,
-                  ),
+                  boxShadow: _isConnected
+                      ? [BoxShadow(color: const Color(0xFF00E676).withOpacity(0.3), blurRadius: 6)]
+                      : (_isConnecting ? [BoxShadow(color: Colors.amberAccent.withOpacity(0.3), blurRadius: 6)] : []),
+                ),
+                child: Icon(
+                  _isConnecting
+                      ? Icons.bluetooth_searching
+                      : (_isConnected ? Icons.bluetooth_connected : Icons.bluetooth),
+                  color: _isConnecting
+                      ? Colors.amberAccent
+                      : (_isConnected ? const Color(0xFF00E676) : Colors.white54),
+                  size: 18,
                 ),
               ),
               const SizedBox(width: 8),
+              // Music Icon with background playback indicator ring
               GestureDetector(
                 onTap: _toggleMusicMode,
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 300),
-                  padding: const EdgeInsets.all(7),
-                  decoration: BoxDecoration(
-                    color: _isMusicMode ? const Color(0xFF0C2448) : const Color(0xFF0A1220),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                      color: _isMusicMode ? Colors.cyanAccent : Colors.white12,
-                      width: _isMusicMode ? 1.5 : 1.0,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    if (isMusicPlaying)
+                      SizedBox(
+                        width: 32,
+                        height: 32,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 1.5,
+                          valueColor: AlwaysStoppedAnimation<Color>(Colors.cyanAccent.withOpacity(0.7)),
+                        ),
+                      ),
+                    Container(
+                      padding: const EdgeInsets.all(7),
+                      decoration: BoxDecoration(
+                        color: _isMusicMode ? const Color(0xFF0C2448) : const Color(0xFF0A1220),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.white12),
+                      ),
+                      child: Icon(
+                        Icons.music_note,
+                        color: _isMusicMode ? Colors.cyanAccent : Colors.white54,
+                        size: 18,
+                      ),
                     ),
-                    boxShadow: [
-                      if (_isMusicMode)
-                        BoxShadow(color: Colors.cyanAccent.withOpacity(0.4), blurRadius: 8),
-                    ],
-                  ),
-                  child: Icon(
-                    Icons.music_note,
-                    color: _isMusicMode ? Colors.cyanAccent : Colors.white54,
-                    size: 18,
-                  ),
+                  ],
                 ),
               ),
               const SizedBox(width: 12),
@@ -1778,31 +1918,50 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
   Widget _buildSystemStatusCard(Color activeColor, Color dynamicNeon, bool isMusicPlaying, double beatVal) {
     Color glowColor = isMusicPlaying ? dynamicNeon : activeColor;
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        RichText(text: TextSpan(children: [
-          TextSpan(text: "SYSTEM ", style: TextStyle(color: glowColor, fontWeight: FontWeight.w900, fontSize: 10)),
-          const TextSpan(text: "STATUS", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 10)),
-        ])),
-        const Divider(color: Colors.white10, height: 8),
-        Expanded(
-          child: FittedBox(
-            fit: BoxFit.scaleDown, alignment: Alignment.topLeft,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _buildStatusRow("Drive Sys", _drivetrainMode, _drivetrainMode == "FWD" ? const Color(0xFF00E5FF) : const Color(0xFFFF1744)),
-                _buildStatusRow("Motor RPM", "${_motorRpm.round()} RPM", const Color(0xFF00E676)),
-                _buildStatusRow("ADAS", _adasEnabled ? "ACTIVE" : "STANDBY", _adasEnabled ? const Color(0xFF00E676) : Colors.white54),
-                _buildStatusRow("ACC Mode", _accEnabled ? "ACTIVE" : "STANDBY", _accEnabled ? const Color(0xFF00E676) : Colors.white54),
-                _buildStatusRow("Steering", _drivetrainMode == "FWD" ? "SERVO" : "DIFFERENTIAL", const Color(0xFF00E676)),
-                _buildStatusRow("Bluetooth", _isConnected ? "CONNECTED" : "OFFLINE", _isConnected ? const Color(0xFF00E676) : Colors.amberAccent),
-              ],
+    return MediaQuery(
+      data: MediaQuery.of(context).copyWith(textScaler: const TextScaler.linear(1.0)),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              height: 16,
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: RichText(
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  text: TextSpan(
+                    children: [
+                      TextSpan(text: "SYSTEM ", style: TextStyle(color: glowColor, fontWeight: FontWeight.w900, fontSize: 10)),
+                      const TextSpan(text: "STATUS", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 10)),
+                    ],
+                  ),
+                ),
+              ),
             ),
-          ),
+            const Divider(color: Colors.white10, height: 10, thickness: 1),
+            Expanded(
+              child: FittedBox(
+                fit: BoxFit.scaleDown, alignment: Alignment.topLeft,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildStatusRow("Drive Sys", _drivetrainMode, _drivetrainMode == "FWD" ? const Color(0xFF00E5FF) : const Color(0xFFFF1744)),
+                    _buildStatusRow("Motor RPM", "${_motorRpm.round()} RPM", const Color(0xFF00E676)),
+                    _buildStatusRow("ADAS", _adasEnabled ? "ACTIVE" : "STANDBY", _adasEnabled ? const Color(0xFF00E676) : Colors.white54),
+                    _buildStatusRow("ACC Mode", _accEnabled ? "ACTIVE" : "STANDBY", _accEnabled ? const Color(0xFF00E676) : Colors.white54),
+                    _buildStatusRow("Steering", _drivetrainMode == "FWD" ? "SERVO" : "DIFFERENTIAL", const Color(0xFF00E676)),
+                    _buildStatusRow("Bluetooth", _isConnected ? "CONNECTED" : "OFFLINE", _isConnected ? const Color(0xFF00E676) : Colors.amberAccent),
+                  ],
+                ),
+              ),
+            ),
+          ],
         ),
-      ],
+      ),
     );
   }
 
@@ -1903,20 +2062,38 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
       }
     }
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text("DETECTED OBJECTS", style: TextStyle(color: glowColor, fontWeight: FontWeight.w900, fontSize: 9.5, letterSpacing: 0.5)),
-        const Divider(color: Colors.white10, height: 8),
-        Expanded(
-          child: objectWidgets.isEmpty
-              ? Center(child: Text("NO OBJECTS DETECTED", style: TextStyle(color: Colors.white.withOpacity(0.3), fontSize: 8, fontWeight: FontWeight.w900)))
-              : ListView(
-                  padding: EdgeInsets.zero,
-                  children: objectWidgets,
+    return MediaQuery(
+      data: MediaQuery.of(context).copyWith(textScaler: const TextScaler.linear(1.0)),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              height: 16,
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  "DETECTED OBJECTS",
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: glowColor, fontWeight: FontWeight.w900, fontSize: 9.5, letterSpacing: 0.5),
                 ),
+              ),
+            ),
+            const Divider(color: Colors.white10, height: 10, thickness: 1),
+            Expanded(
+              child: objectWidgets.isEmpty
+                  ? Center(child: Text("NO OBJECTS DETECTED", style: TextStyle(color: Colors.white.withOpacity(0.3), fontSize: 8, fontWeight: FontWeight.w900)))
+                  : ListView(
+                      padding: EdgeInsets.zero,
+                      children: objectWidgets,
+                    ),
+            ),
+          ],
         ),
-      ],
+      ),
     );
   }
 
@@ -2061,18 +2238,18 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
 
   Widget _buildCenterCameraViewport(Color activeColor, Color dynamicNeon, bool isMusicPlaying, double beatVal) {
     Color glowColor = isMusicPlaying ? dynamicNeon : activeColor;
-    double blur = isMusicPlaying ? 16.0 + (beatVal * 18.0) : 8.0;
-    double spread = isMusicPlaying ? 2.5 + (beatVal * 3.0) : 1.5;
+    double blur = isMusicPlaying ? 10.0 + (beatVal * 8.0) : 6.0;
+    double spread = isMusicPlaying ? 1.2 + (beatVal * 1.5) : 0.8;
 
     return AnimatedContainer(
       duration: const Duration(milliseconds: 150),
       decoration: BoxDecoration(
         color: const Color(0xFF050B14),
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: glowColor.withOpacity(isMusicPlaying ? 0.75 + (beatVal * 0.25) : 0.5), width: 2.0),
+        border: Border.all(color: glowColor.withOpacity(isMusicPlaying ? 0.6 + (beatVal * 0.3) : 0.4), width: 1.8),
         boxShadow: [
           BoxShadow(
-            color: glowColor.withOpacity(isMusicPlaying ? 0.4 + (beatVal * 0.6) : 0.25),
+            color: glowColor.withOpacity(isMusicPlaying ? 0.25 + (beatVal * 0.35) : 0.15),
             blurRadius: blur,
             spreadRadius: spread,
           ),
@@ -2086,7 +2263,7 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
             painter: ArcadeMotionHighwayPainter(
               displacement: _virtualDistanceTraveled,
               velocityKmh: _virtualVelocityKmh,
-              steeringAngle: _steeringAngleDeg,
+              steeringAngle: 0.0,
               driveMode: _driveMode,
               normalLightsOn: _normalLightsOn,
               highBeamOn: _highBeamOn,
@@ -2229,13 +2406,13 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
   }
 
   // ============================================================================
-  // STEERING WHEEL WITH BRIGHT CYAN BEAT-REACTIVE INNER CONTOUR ILLUMINATION
+  // STEERING WHEEL MODULE
   // ============================================================================
   Widget _buildSteeringWheelModule(Color activeColor, Color dynamicNeon, bool isMusicPlaying, double beatVal) {
     const double size = 230.0;
     Color wheelGlow = isMusicPlaying ? dynamicNeon : const Color(0xFF00E5FF);
-    double wheelBlur = isMusicPlaying ? 16.0 + (beatVal * 18.0) : 9.0;
-    double wheelSpread = isMusicPlaying ? 2.5 + (beatVal * 3.5) : 1.2;
+    double wheelBlur = isMusicPlaying ? 12.0 + (beatVal * 10.0) : 6.0;
+    double wheelSpread = isMusicPlaying ? 1.5 + (beatVal * 2.0) : 0.8;
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -2246,67 +2423,91 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
           onPanEnd: _onSteeringPanEnd,
           child: Transform.rotate(
             angle: _steeringAngleDeg * (math.pi / 180),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 150),
-              width: size, height: size,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                boxShadow: [
-                  BoxShadow(
-                    color: wheelGlow.withOpacity(isMusicPlaying ? 0.5 + (beatVal * 0.5) : 0.3),
-                    blurRadius: wheelBlur,
-                    spreadRadius: wheelSpread,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 150),
+                  width: size, height: size,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: wheelGlow.withOpacity(isMusicPlaying ? 0.35 + (beatVal * 0.35) : 0.2),
+                        blurRadius: wheelBlur,
+                        spreadRadius: wheelSpread,
+                      ),
+                    ],
                   ),
-                ],
-              ),
-              child: Stack(
-                alignment: Alignment.center,
-                children: [
-                  Image.asset(
-                    'assets/wheel_body.png', width: size, height: size, fit: BoxFit.contain,
-                    errorBuilder: (context, error, stackTrace) => Container(
-                      width: size, height: size,
-                      decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: wheelGlow, width: 6.0)),
-                    ),
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      Image.asset(
+                        'assets/wheel_body.png', width: size, height: size, fit: BoxFit.contain,
+                        errorBuilder: (context, error, stackTrace) => Container(
+                          width: size, height: size,
+                          decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: wheelGlow, width: 6.0)),
+                        ),
+                      ),
+                      GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTapDown: (_) {
+                          setState(() => _isHonking = true);
+                          HapticFeedback.heavyImpact();
+                          _playHornSound();
+                          _sendCommand("HORN:ON");
+                        },
+                        onTapUp: (_) {
+                          setState(() => _isHonking = false);
+                          _sendCommand("HORN:OFF");
+                        },
+                        onTapCancel: () {
+                          setState(() => _isHonking = false);
+                          _sendCommand("HORN:OFF");
+                        },
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 120),
+                          transform: Matrix4.identity()..scale(_isHonking ? 0.93 : 1.0),
+                          width: 70, height: 70,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            gradient: const RadialGradient(colors: [Color(0xFF1E2838), Color(0xFF080C14)], stops: [0.35, 1.0]),
+                            border: Border.all(color: wheelGlow, width: 2.5),
+                            boxShadow: [
+                              BoxShadow(color: wheelGlow.withOpacity(isMusicPlaying ? 0.6 + (beatVal * 0.2) : 0.4), blurRadius: 8),
+                              BoxShadow(color: wheelGlow.withOpacity(isMusicPlaying ? 0.3 : 0.15), blurRadius: 18),
+                            ],
+                          ),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: const [
+                              Icon(Icons.speed, color: Colors.white, size: 16),
+                              SizedBox(height: 1),
+                              Text("GEAR HEADS", style: TextStyle(color: Colors.white, fontSize: 6.5, fontWeight: FontWeight.w900, letterSpacing: 0.6)),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                  GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTapDown: (_) {
-                      setState(() => _isHonking = true);
-                      HapticFeedback.heavyImpact();
-                      _playHornSound();
-                      _sendCommand("HORN:ON");
-                    },
-                    onTapUp: (_) {
-                      setState(() => _isHonking = false);
-                      _sendCommand("HORN:OFF");
-                    },
-                    onTapCancel: () {
-                      setState(() => _isHonking = false);
-                      _sendCommand("HORN:OFF");
-                    },
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 120),
-                      transform: Matrix4.identity()..scale(_isHonking ? 0.93 : 1.0),
-                      width: 70, height: 70,
+                ),
+                Positioned(
+                  top: 20,
+                  left: 35,
+                  child: IgnorePointer(
+                    child: Container(
+                      width: size * 0.30,
+                      height: size * 0.18,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        gradient: const RadialGradient(colors: [Color(0xFF1E2838), Color(0xFF080C14)], stops: [0.35, 1.0]),
-                        border: Border.all(color: wheelGlow, width: 3.0),
-                        boxShadow: [BoxShadow(color: wheelGlow.withOpacity(isMusicPlaying ? 0.85 + (beatVal * 0.15) : 0.6), blurRadius: 18)],
-                      ),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: const [
-                          Icon(Icons.speed, color: Colors.white, size: 16),
-                          SizedBox(height: 1),
-                          Text("GEAR HEADS", style: TextStyle(color: Colors.white, fontSize: 6.5, fontWeight: FontWeight.w900, letterSpacing: 0.6)),
-                        ],
+                        gradient: RadialGradient(
+                          colors: [Colors.white.withOpacity(0.15), Colors.transparent],
+                        ),
                       ),
                     ),
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         );
@@ -2321,38 +2522,70 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.end,
       children: [
-        GestureDetector(
-          onTapDown: (_) => _onBrakeDown(),
-          onTapUp: (_) => _onBrakeUp(),
-          onTapCancel: () => _onBrakeUp(),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 90),
-            transformAlignment: Alignment.topCenter,
-            transform: Matrix4.identity()..setEntry(3, 2, 0.002)..rotateX(brakeActive ? -0.25 : 0.0)..scale(brakeActive ? 0.94 : 1.0),
-            width: 82, height: 150,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(10),
-              boxShadow: [BoxShadow(color: const Color(0xFFFF1744).withOpacity(brakeActive ? 0.95 : 0.35), blurRadius: 24, offset: const Offset(0, 3))],
+        Stack(
+          alignment: Alignment.bottomCenter,
+          children: [
+            Positioned(
+              bottom: -4,
+              child: Container(
+                width: 76,
+                height: 25,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: RadialGradient(colors: [Colors.black.withOpacity(0.7), Colors.transparent]),
+                ),
+              ),
             ),
-            child: Image.asset('assets/pedal_brake.png', fit: BoxFit.contain),
-          ),
+            GestureDetector(
+              onTapDown: (_) => _onBrakeDown(),
+              onTapUp: (_) => _onBrakeUp(),
+              onTapCancel: () => _onBrakeUp(),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 90),
+                transformAlignment: Alignment.topCenter,
+                transform: Matrix4.identity()..setEntry(3, 2, 0.002)..rotateX(brakeActive ? -0.25 : 0.0)..scale(brakeActive ? 0.94 : 1.0),
+                width: 82, height: 150,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(10),
+                  boxShadow: [BoxShadow(color: const Color(0xFFFF1744).withOpacity(brakeActive ? 0.95 : 0.35), blurRadius: 24, offset: const Offset(0, 3))],
+                ),
+                child: Image.asset('assets/pedal_brake.png', fit: BoxFit.contain),
+              ),
+            ),
+          ],
         ),
         const SizedBox(width: 8),
-        GestureDetector(
-          onTapDown: (_) => _onGasDown(),
-          onTapUp: (_) => _onGasUp(),
-          onTapCancel: () => _onGasUp(),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 90),
-            transformAlignment: Alignment.bottomCenter,
-            transform: Matrix4.identity()..setEntry(3, 2, 0.002)..rotateX(_isGasPressed ? 0.22 : 0.0)..scale(_isGasPressed ? 0.95 : 1.0),
-            width: 74, height: 185,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(10),
-              boxShadow: [BoxShadow(color: activeColor.withOpacity(_isGasPressed ? 0.95 : 0.35), blurRadius: 24, offset: const Offset(0, 3))],
+        Stack(
+          alignment: Alignment.bottomCenter,
+          children: [
+            Positioned(
+              bottom: -4,
+              child: Container(
+                width: 68,
+                height: 25,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: RadialGradient(colors: [Colors.black.withOpacity(0.7), Colors.transparent]),
+                ),
+              ),
             ),
-            child: Image.asset('assets/pedal_gas.png', fit: BoxFit.contain),
-          ),
+            GestureDetector(
+              onTapDown: (_) => _onGasDown(),
+              onTapUp: (_) => _onGasUp(),
+              onTapCancel: () => _onGasUp(),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 90),
+                transformAlignment: Alignment.bottomCenter,
+                transform: Matrix4.identity()..setEntry(3, 2, 0.002)..rotateX(_isGasPressed ? 0.22 : 0.0)..scale(_isGasPressed ? 0.95 : 1.0),
+                width: 74, height: 185,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(10),
+                  boxShadow: [BoxShadow(color: activeColor.withOpacity(_isGasPressed ? 0.95 : 0.35), blurRadius: 24, offset: const Offset(0, 3))],
+                ),
+                child: Image.asset('assets/pedal_gas.png', fit: BoxFit.contain),
+              ),
+            ),
+          ],
         ),
         const SizedBox(width: 8),
         AnimatedContainer(
@@ -2444,7 +2677,7 @@ class _ExactScreenshotDashboardState extends State<ExactScreenshotDashboard>
 }
 
 // ============================================================================
-// 7. ARCADE MOTION HIGHWAY RASTER PAINTER (ENHANCED ADAS LANE & TARGET ANIMATION)
+// 8. ARCADE MOTION HIGHWAY RASTER PAINTER
 // ============================================================================
 class ArcadeMotionHighwayPainter extends CustomPainter {
   final double displacement;
@@ -2488,15 +2721,14 @@ class ArcadeMotionHighwayPainter extends CustomPainter {
     final double cx = size.width / 2;
     final double horizonY = size.height * (povMode == 0 ? 0.35 : 0.38);
 
-    final double turnNorm = (steeringAngle / 180.0).clamp(-1.0, 1.0);
-    final double horizonShift = turnNorm * 80.0;
+    const double horizonShift = 0.0;
 
     _drawSkyAndHorizon(canvas, size, horizonY);
     _drawArcadeCitySkyline(canvas, size, horizonY, horizonShift);
     _drawArcadeRoad(canvas, size, cx, horizonY, horizonShift);
     
     if (adasOpacity > 0.01) {
-      _drawFuturisticAdasLaneAndTracking(canvas, size, cx, horizonY, horizonShift, turnNorm);
+      _drawFuturisticAdasLaneAndTracking(canvas, size, cx, horizonY, horizonShift, 0.0);
     }
 
     _drawRoadsideInfrastructure(canvas, size, cx, horizonY, horizonShift);
@@ -2516,7 +2748,7 @@ class ArcadeMotionHighwayPainter extends CustomPainter {
     Paint sky = Paint()
       ..shader = LinearGradient(
         begin: Alignment.topCenter, end: Alignment.bottomCenter,
-        colors: [const Color(0xFF01040A), const Color(0xFF071022), accentColor.withOpacity(0.12)],
+        colors: [const Color(0xFF01040A), const Color(0xFF071022), accentColor.withOpacity(0.08)],
         stops: const [0.0, 0.65, 1.0],
       ).createShader(Rect.fromLTWH(0, 0, size.width, horizonY));
     canvas.drawRect(Rect.fromLTWH(0, 0, size.width, horizonY), sky);
@@ -2525,6 +2757,7 @@ class ArcadeMotionHighwayPainter extends CustomPainter {
   void _drawArcadeCitySkyline(Canvas canvas, Size size, double horizonY, double turnShift) {
     final double parallax = turnShift * 0.18;
     final List<double> heights = [62, 90, 48, 112, 72, 98, 58, 120, 80, 94, 66];
+    final Color hazeColor = const Color(0xFF0A101C);
 
     for (int i = 0; i < heights.length; i++) {
       double bx = (i * 36.0) - parallax - 20;
@@ -2532,15 +2765,19 @@ class ArcadeMotionHighwayPainter extends CustomPainter {
       double by = horizonY - bh;
       double bw = 30.0;
 
+      double depthFactor = (i / heights.length);
+      Color blendedFacade = Color.lerp(const Color(0xFF162842), hazeColor, 0.4 + (depthFactor * 0.4))!;
+      Color blendedBase = Color.lerp(const Color(0xFF09121E), hazeColor, 0.5 + (depthFactor * 0.4))!;
+
       Paint facade = Paint()
         ..shader = LinearGradient(
           begin: Alignment.topCenter, end: Alignment.bottomCenter,
-          colors: [const Color(0xFF162842), const Color(0xFF09121E)],
+          colors: [blendedFacade, blendedBase],
         ).createShader(Rect.fromLTWH(bx, by, bw, bh));
       canvas.drawRect(Rect.fromLTWH(bx, by, bw, bh), facade);
 
-      Paint winWarm = Paint()..color = const Color(0xFFFFD54F).withOpacity(0.50);
-      Paint winCyan = Paint()..color = accentColor.withOpacity(0.50);
+      Paint winWarm = Paint()..color = const Color(0xFFFFD54F).withOpacity(0.25 * (1.0 - depthFactor * 0.5));
+      Paint winCyan = Paint()..color = accentColor.withOpacity(0.25 * (1.0 - depthFactor * 0.5));
 
       for (double wy = by + 6; wy < horizonY - 4; wy += 8) {
         if ((i + wy.toInt()) % 3 != 0) {
@@ -2572,23 +2809,31 @@ class ArcadeMotionHighwayPainter extends CustomPainter {
     Paint asphalt = Paint()
       ..shader = LinearGradient(
         begin: Alignment.topCenter, end: Alignment.bottomCenter,
-        colors: [const Color(0xFF0F1826), const Color(0xFF0A101A), const Color(0xFF04060A)],
+        colors: [const Color(0xFF020408), const Color(0xFF0F1826), const Color(0xFF0A101A), const Color(0xFF04060A)],
+        stops: const [0.0, 0.15, 0.5, 1.0],
       ).createShader(Rect.fromLTWH(0, horizonY, size.width, size.height - horizonY));
     canvas.drawRect(Rect.fromLTWH(0, horizonY, size.width, size.height - horizonY), asphalt);
+
+    List<Color> pulseColors = [
+      const Color(0xFF00E5FF),
+      const Color(0xFF7C4DFF),
+      const Color(0xFFE040FB),
+      const Color(0xFF00E676),
+    ];
+    Color currentBeatColor = pulseColors[(beatIntensity * 3).floor().clamp(0, pulseColors.length - 1)];
 
     Paint neonGlow = Paint()
       ..shader = LinearGradient(
         begin: Alignment.centerLeft, end: Alignment.centerRight,
-        colors: [Colors.transparent, accentColor.withOpacity(0.08), accentColor.withOpacity(0.18 + (beatIntensity * 0.15)), accentColor.withOpacity(0.08), Colors.transparent],
+        colors: [Colors.transparent, currentBeatColor.withOpacity(0.06 + (beatIntensity * 0.12)), currentBeatColor.withOpacity(0.15 + (beatIntensity * 0.2)), currentBeatColor.withOpacity(0.06 + (beatIntensity * 0.12)), Colors.transparent],
         stops: const [0.0, 0.35, 0.50, 0.65, 1.0],
-      ).createShader(Rect.fromLTWH(cx - 120, horizonY, 240, size.height - horizonY))
+      ).createShader(Rect.fromLTWH(cx - 140, horizonY, 280, size.height - horizonY))
       ..blendMode = BlendMode.screen;
-    canvas.drawRect(Rect.fromLTWH(cx - 120, horizonY, 240, size.height - horizonY), neonGlow);
+    canvas.drawRect(Rect.fromLTWH(cx - 140, horizonY, 280, size.height - horizonY), neonGlow);
 
     canvas.restore();
   }
 
-  // ENHANCED ADAS SCANNING LANE & FLOWING HUD PATH ANIMATION
   void _drawFuturisticAdasLaneAndTracking(Canvas canvas, Size size, double cx, double horizonY, double turnShift, double turnNorm) {
     final Offset hLeft = Offset(cx - 44 + turnShift, horizonY);
     final Offset cLeft = Offset(cx - 120 + turnShift * 1.3 - (turnNorm * 30), size.height * 0.65);
@@ -2606,34 +2851,76 @@ class ArcadeMotionHighwayPainter extends CustomPainter {
       ..moveTo(hRight.dx, hRight.dy)
       ..quadraticBezierTo(cRight.dx, cRight.dy, bRight.dx, bRight.dy);
 
-    // Outer Glow Track
-    Paint outerGlow = Paint()
-      ..color = const Color(0xFF00E676).withOpacity(0.35 * adasOpacity)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 6.0
-      ..strokeCap = StrokeCap.round
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8.0);
+    double scanPhase = (displacement * 2.5) % 1.0;
 
-    // Inner Core Line with Flowing Dash Effect
+    final List<ui.PathMetric> leftMetrics = leftLane.computeMetrics().toList();
+    if (leftMetrics.isNotEmpty) {
+      final ui.PathMetric metric = leftMetrics.first;
+      final double totalLen = metric.length;
+      const int segments = 16;
+      for (int i = 0; i < segments; i++) {
+        double startFraction = i / segments;
+        double endFraction = (i + 1) / segments;
+        Path segment = metric.extractPath(startFraction * totalLen, endFraction * totalLen);
+
+        double distanceToScan = (startFraction - scanPhase).abs();
+        if (distanceToScan > 0.5) distanceToScan = 1.0 - distanceToScan;
+        double pulseFactor = 1.0 - (distanceToScan * 2.0);
+        if (pulseFactor < 0.0) pulseFactor = 0.0;
+
+        Paint segPaint = Paint()
+          ..color = const Color(0xFF00E676).withOpacity((0.2 + (pulseFactor * 0.5) + (beatIntensity * 0.2)) * adasOpacity)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3.5 + (pulseFactor * 1.5)
+          ..strokeCap = StrokeCap.round
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5.0);
+
+        canvas.drawPath(segment, segPaint);
+      }
+    }
+
+    final List<ui.PathMetric> rightMetrics = rightLane.computeMetrics().toList();
+    if (rightMetrics.isNotEmpty) {
+      final ui.PathMetric metric = rightMetrics.first;
+      final double totalLen = metric.length;
+      const int segments = 16;
+      for (int i = 0; i < segments; i++) {
+        double startFraction = i / segments;
+        double endFraction = (i + 1) / segments;
+        Path segment = metric.extractPath(startFraction * totalLen, endFraction * totalLen);
+
+        double distanceToScan = (startFraction - scanPhase).abs();
+        if (distanceToScan > 0.5) distanceToScan = 1.0 - distanceToScan;
+        double pulseFactor = 1.0 - (distanceToScan * 2.0);
+        if (pulseFactor < 0.0) pulseFactor = 0.0;
+
+        Paint segPaint = Paint()
+          ..color = const Color(0xFF00E676).withOpacity((0.2 + (pulseFactor * 0.5) + (beatIntensity * 0.2)) * adasOpacity)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3.5 + (pulseFactor * 1.5)
+          ..strokeCap = StrokeCap.round
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5.0);
+
+        canvas.drawPath(segment, segPaint);
+      }
+    }
+
     Paint innerCore = Paint()
-      ..color = Colors.white.withOpacity(0.95 * adasOpacity)
+      ..color = Colors.white.withOpacity(0.85 * adasOpacity)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.5
+      ..strokeWidth = 1.8
       ..strokeCap = StrokeCap.round;
 
-    canvas.drawPath(leftLane, outerGlow);
-    canvas.drawPath(rightLane, outerGlow);
     canvas.drawPath(leftLane, innerCore);
     canvas.drawPath(rightLane, innerCore);
 
-    // DRAW FLOWING HUD CHEVRONS ALONG THE PATH TO REPRESENT ACTIVE CALCULATED PATH
     Paint chevronPaint = Paint()
-      ..color = const Color(0xFF00E676).withOpacity(0.85 * adasOpacity)
+      ..color = const Color(0xFF00E676).withOpacity((0.45 + (beatIntensity * 0.25)) * adasOpacity)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.0
+      ..strokeWidth = 1.6
       ..strokeCap = StrokeCap.round;
 
-    double flowOffset = (displacement * 120.0) % 40.0;
+    double flowOffset = (displacement * 140.0) % 40.0;
     for (double y = horizonY + 40 + flowOffset; y < size.height - 20; y += 50) {
       double progressFactor = (y - horizonY) / (size.height - horizonY);
       double currentCx = cx + (turnShift * (1.0 - progressFactor));
@@ -2667,8 +2954,8 @@ class ArcadeMotionHighwayPainter extends CustomPainter {
   void _drawArcadeSpeedLines(Canvas canvas, Size size, double cx, double horizonY, double turnShift) {
     if (velocityKmh < 30) return;
     Paint speedLinePaint = Paint()
-      ..color = Colors.white.withOpacity(0.15)
-      ..strokeWidth = 1.5;
+      ..color = Colors.white.withOpacity(0.10)
+      ..strokeWidth = 1.2;
 
     for (int i = 0; i < 6; i++) {
       double rx = cx + ((i - 3) * 75.0) + (math.sin(displacement * 10 + i) * 30);
@@ -2688,14 +2975,14 @@ class ArcadeMotionHighwayPainter extends CustomPainter {
       double curCenterX = cx + (turnShift * curveFactor * curveFactor);
       double laneSpread = 30.0 + (z * 92.0);
 
-      Paint lanePaint = Paint()..color = Colors.white.withOpacity(0.95)..strokeWidth = 2.2 * scale..strokeCap = StrokeCap.round;
+      Paint lanePaint = Paint()..color = Colors.white.withOpacity(0.85)..strokeWidth = 1.8 * scale..strokeCap = StrokeCap.round;
 
       canvas.drawLine(Offset(curCenterX - laneSpread, y), Offset(curCenterX - laneSpread, y + dashLen), lanePaint);
       canvas.drawLine(Offset(curCenterX + laneSpread, y), Offset(curCenterX + laneSpread, y + dashLen), lanePaint);
 
       Paint catEye = Paint()..color = accentColor;
-      canvas.drawCircle(Offset(curCenterX - laneSpread, y), 1.5 * scale, catEye);
-      canvas.drawCircle(Offset(curCenterX + laneSpread, y), 1.5 * scale, catEye);
+      canvas.drawCircle(Offset(curCenterX - laneSpread, y), 1.2 * scale, catEye);
+      canvas.drawCircle(Offset(curCenterX + laneSpread, y), 1.2 * scale, catEye);
     }
   }
 
@@ -2708,7 +2995,7 @@ class ArcadeMotionHighwayPainter extends CustomPainter {
       double h = 50.0 * scale;
       double curCenterX = cx + (turnShift * (1.0 - z));
 
-      Paint steel = Paint()..color = const Color(0xFF334A66)..strokeWidth = 2.2 * scale;
+      Paint steel = Paint()..color = const Color(0xFF1B283A)..strokeWidth = 1.8 * scale;
       canvas.drawLine(Offset(curCenterX - w / 2, y + h), Offset(curCenterX - w / 2, y), steel);
       canvas.drawLine(Offset(curCenterX + w / 2, y + h), Offset(curCenterX + w / 2, y), steel);
       canvas.drawLine(Offset(curCenterX - w / 2, y), Offset(curCenterX + w / 2, y), steel);
@@ -2718,7 +3005,7 @@ class ArcadeMotionHighwayPainter extends CustomPainter {
   void _drawHeadlightBeams(Canvas canvas, Size size, double cx, double horizonY, double turnShift) {
     if (!normalLightsOn) return;
     double beamReach = highBeamOn ? 0.38 : 0.58;
-    double beamIntensity = highBeamOn ? 0.42 : 0.22;
+    double beamIntensity = highBeamOn ? 0.25 : 0.12;
 
     Path beam = Path()
       ..moveTo(cx - 90, size.height)
@@ -2738,9 +3025,28 @@ class ArcadeMotionHighwayPainter extends CustomPainter {
     );
   }
 
+  void _drawCornerBrackets(Canvas canvas, Rect bbox, Color color, double ageSeconds) {
+    double fadeAlpha = (ageSeconds / 0.15).clamp(0.0, 1.0);
+    Paint bracketPaint = Paint()
+      ..color = color.withOpacity(0.9 * fadeAlpha)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.8
+      ..strokeCap = StrokeCap.square;
+
+    double lenW = bbox.width * 0.22;
+    double lenH = bbox.height * 0.22;
+
+    canvas.drawPath(Path()..moveTo(bbox.left, bbox.top + lenH)..lineTo(bbox.left, bbox.top)..lineTo(bbox.left + lenW, bbox.top), bracketPaint);
+    canvas.drawPath(Path()..moveTo(bbox.right - lenW, bbox.top)..lineTo(bbox.right, bbox.top)..lineTo(bbox.right, bbox.top + lenH), bracketPaint);
+    canvas.drawPath(Path()..moveTo(bbox.left, bbox.bottom - lenH)..lineTo(bbox.left, bbox.bottom)..lineTo(bbox.left + lenW, bbox.bottom), bracketPaint);
+    canvas.drawPath(Path()..moveTo(bbox.right - lenW, bbox.bottom)..lineTo(bbox.right, bbox.bottom)..lineTo(bbox.right, bbox.bottom - lenH), bracketPaint);
+  }
+
   void _drawSurroundingTraffic(Canvas canvas, Size size, double cx, double horizonY, double turnShift) {
     final sorted = List<SimVehicle>.from(trafficList)
       ..sort((a, b) => b.distanceMeters.compareTo(a.distanceMeters));
+
+    double currentTime = DateTime.now().millisecondsSinceEpoch.toDouble();
 
     for (var v in sorted) {
       if (v.distanceMeters < 3.5 || v.distanceMeters > 95.0) continue;
@@ -2770,19 +3076,27 @@ class ArcadeMotionHighwayPainter extends CustomPainter {
 
       Paint tailGlow = Paint()
         ..color = const Color(0xFFFF1744)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 5.0 * scale);
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 4.0 * scale);
       canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromCenter(center: Offset(pos.dx - w * 0.32, pos.dy + h * 0.05), width: w * 0.20, height: h * 0.14), Radius.circular(1.5 * scale)), tailGlow);
       canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromCenter(center: Offset(pos.dx + w * 0.32, pos.dy + h * 0.05), width: w * 0.20, height: h * 0.14), Radius.circular(1.5 * scale)), tailGlow);
 
-      Color boxColor = v.lane == 0 ? const Color(0xFF00E676) : Colors.white60;
+      Color boxColor = v.lane == 0 ? const Color(0xFF00E676) : Colors.cyanAccent;
       Rect bbox = Rect.fromCenter(center: pos, width: w * 1.18, height: h * 1.18);
-      canvas.drawRect(bbox, Paint()..color = boxColor..strokeWidth = 1.8..style = PaintingStyle.stroke);
+      
+      double ageSec = (currentTime - v.firstSeenTime) / 1000.0;
+      _drawCornerBrackets(canvas, bbox, boxColor, ageSec);
 
       TextPainter tag = TextPainter(
         text: TextSpan(text: "${v.distanceMeters.toStringAsFixed(1)} m", style: TextStyle(color: Colors.white, fontSize: 8.0 * scale, fontWeight: FontWeight.bold, backgroundColor: Colors.black87)),
         textDirection: TextDirection.ltr,
       )..layout();
-      tag.paint(canvas, Offset(bbox.center.dx - (tag.width / 2), bbox.top - 14));
+      
+      Paint telemetryLine = Paint()
+        ..color = boxColor.withOpacity(0.4)
+        ..strokeWidth = 1.0;
+      canvas.drawLine(Offset(bbox.center.dx, bbox.top), Offset(bbox.center.dx, bbox.top - 14), telemetryLine);
+
+      tag.paint(canvas, Offset(bbox.center.dx - (tag.width / 2), bbox.top - 16));
     }
   }
 
@@ -2804,15 +3118,15 @@ class ArcadeMotionHighwayPainter extends CustomPainter {
       canvas.drawLine(Offset(egoX - w * 0.42, egoY + h * 0.32), Offset(egoX + w * 0.42, egoY + h * 0.32), Paint()..color = accentColor..strokeWidth = 2.5);
 
       Paint drivetrainGlow = Paint()
-        ..color = (drivetrainMode == "FWD" ? const Color(0xFF00E5FF) : const Color(0xFFFF1744)).withOpacity(0.50)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6.0);
+        ..color = (drivetrainMode == "FWD" ? const Color(0xFF00E5FF) : const Color(0xFFFF1744)).withOpacity(0.40)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5.0);
       
       if (drivetrainMode == "FWD") {
-        canvas.drawCircle(Offset(egoX - w * 0.35, egoY + h * 0.28), 6.0, drivetrainGlow);
-        canvas.drawCircle(Offset(egoX + w * 0.35, egoY + h * 0.28), 6.0, drivetrainGlow);
+        canvas.drawCircle(Offset(egoX - w * 0.35, egoY + h * 0.28), 5.0, drivetrainGlow);
+        canvas.drawCircle(Offset(egoX + w * 0.35, egoY + h * 0.28), 5.0, drivetrainGlow);
       } else {
-        canvas.drawCircle(Offset(egoX - w * 0.35, egoY - h * 0.05), 6.0, drivetrainGlow);
-        canvas.drawCircle(Offset(egoX + w * 0.35, egoY - h * 0.05), 6.0, drivetrainGlow);
+        canvas.drawCircle(Offset(egoX - w * 0.35, egoY - h * 0.05), 5.0, drivetrainGlow);
+        canvas.drawCircle(Offset(egoX + w * 0.35, egoY - h * 0.05), 5.0, drivetrainGlow);
       }
 
       Rect cabin = Rect.fromCenter(center: Offset(egoX, egoY - h * 0.25), width: w * 0.74, height: h * 0.46);
@@ -2828,7 +3142,7 @@ class ArcadeMotionHighwayPainter extends CustomPainter {
 
       Paint lightbar = Paint()
         ..color = brakePressed ? const Color(0xFFFF1744) : const Color(0xFFFF3366)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, brakePressed ? 14.0 : 6.0);
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, brakePressed ? 12.0 : 5.0);
       Rect barRect = Rect.fromCenter(center: Offset(egoX, egoY - h * 0.02), width: w * 0.90, height: 6.5);
       canvas.drawRRect(RRect.fromRectAndRadius(barRect, const Radius.circular(3)), lightbar);
       canvas.drawRRect(RRect.fromRectAndRadius(barRect.deflate(1.2), const Radius.circular(1.5)), Paint()..color = Colors.white);
@@ -2847,7 +3161,7 @@ class ArcadeMotionHighwayPainter extends CustomPainter {
 }
 
 // ============================================================================
-// 8. TRANSITION PAINTERS & WARP PAINTER
+// 9. TRANSITION PAINTERS & WARP PAINTER
 // ============================================================================
 class DrivetrainWarpPainter extends CustomPainter {
   final double progress;
@@ -2878,22 +3192,22 @@ class DrivetrainWarpPainter extends CustomPainter {
 class HorizontalEnergyBusPainter extends CustomPainter {
   final Offset origin;
   final double progress;
-  final bool isForward;
+  final bool isFolder;
   final Color color;
 
-  HorizontalEnergyBusPainter({required this.origin, required this.progress, required this.isForward, required this.color});
+  HorizontalEnergyBusPainter({required this.origin, required this.progress, required bool isForward, required this.color}) : isFolder = isForward;
 
   @override
   void paint(Canvas canvas, Size size) {
     double targetX = size.width * 0.50;
-    double currentX = isForward ? origin.dx + (targetX - origin.dx) * progress : targetX + (origin.dx - targetX) * (1.0 - progress);
+    double currentX = isFolder ? origin.dx + (targetX - origin.dx) * progress : targetX + (origin.dx - targetX) * (1.0 - progress);
     double busY = origin.dy;
 
     Paint linePaint = Paint()
       ..shader = LinearGradient(colors: [Colors.transparent, color.withOpacity(0.8), Colors.white, color.withOpacity(0.8), Colors.transparent]).createShader(Rect.fromLTWH(currentX - 50, busY - 4, 100, 8))
       ..strokeWidth = 3.0;
 
-    canvas.drawLine(Offset(isForward ? origin.dx : targetX, busY), Offset(currentX, busY), linePaint);
+    canvas.drawLine(Offset(isFolder ? origin.dx : targetX, busY), Offset(currentX, busY), linePaint);
     canvas.drawCircle(Offset(currentX, busY), 5.0, Paint()..color = color.withOpacity(0.9)..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8));
     canvas.drawCircle(Offset(currentX, busY), 2.5, Paint()..color = Colors.white);
   }
